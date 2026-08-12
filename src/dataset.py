@@ -33,9 +33,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from scipy.io import loadmat
 
 import numpy as np
 import pandas as pd
+import scipy.io
 
 
 # ============================================================
@@ -45,15 +47,28 @@ import pandas as pd
 STANDARD_COLUMNS = [
     "timestamp",
     "sensor_id",
+
     "ax",
     "ay",
     "az",
+
     "gx",
     "gy",
     "gz",
+
+    "mx",
+    "my",
+    "mz",
+
+    "bcg_x",
+    "bcg_y",
+    "bcg_z",
+
     "label",
     "subject_id",
+
     "dataset_source",
+    "record_id"
 ]
 
 
@@ -1219,6 +1234,872 @@ class CoughLoader:
                     ) > 0
                     for trial in trials
                 )
+        }
+
+        return self.raw_data
+
+
+
+    
+
+
+#====================================================================================================================================================================================
+#====================================================================================================================================================================================
+
+
+
+
+# ============================================================
+# 4_IMU_Loader
+# ============================================================
+
+class FourIMULoader(BaseDatasetLoader):
+    """
+    Loader for the Fetal Movement Dataset Recorded Using Four IMUs.
+
+    Dataset structure:
+        four_imu/
+            Additional Data - Sub-dataset One.csv
+            Additional Data - Sub-dataset Two.csv
+            Additional Data - Sub-dataset Three.csv
+            Sub-dataset One/
+                record_1.csv
+                ...
+            Sub-dataset Two/
+                record_1.csv
+                ...
+            Sub-dataset Three/
+                record_1.csv
+                ...
+
+    Each recording contains:
+        time
+        ax1 ay1 az1 gx1 gy1 gz1
+        ax2 ay2 az2 gx2 gy2 gz2
+        ax3 ay3 az3 gx3 gy3 gz3
+        ax4 ay4 az4 gx4 gy4 gz4
+        label
+
+    The raw four-IMU wide format is converted into a long/common
+    sensor schema: one row = one timestamp from one IMU.
+
+    The source README states that the instrument contains four
+    MPU6050 IMUs, each with tri-axial accelerometer + gyroscope,
+    sampled at approximately 30 Hz.
+    """
+
+    STANDARD_COLUMNS = [
+        "timestamp",
+        "sensor_id",
+        "ax", "ay", "az",
+        "gx", "gy", "gz",
+        "mx", "my", "mz",
+        "label",
+        "subject_id",
+        "dataset_source",
+        "record_id",
+        "sub_dataset",
+    ]
+
+    def __init__(self, root_path):
+        self.root_path = Path(root_path)
+        self.dataset_root = self.root_path
+
+        self.raw_data = None
+        self.metadata = {}
+        self.record_files = []
+
+    def discover(self):
+        """Discover only actual recording CSVs, excluding metadata CSVs."""
+
+        if not self.dataset_root.exists():
+            raise FileNotFoundError(
+                f"Four-IMU dataset path does not exist:\n"
+                f"{self.dataset_root}"
+            )
+
+        records = []
+
+        for subdir in sorted(self.dataset_root.glob("Sub-dataset *")):
+
+            if not subdir.is_dir():
+                continue
+
+            for csv_file in sorted(subdir.glob("record_*.csv")):
+
+                if not csv_file.is_file():
+                    continue
+
+                records.append({
+                    "sub_dataset": subdir.name,
+                    "record_id": csv_file.stem,
+                    "path": csv_file,
+                })
+
+        self.record_files = records
+        return records
+
+    @staticmethod
+    def _required_columns():
+        columns = ["time", "label"]
+
+        for imu in range(1, 5):
+            columns.extend([
+                f"ax{imu}", f"ay{imu}", f"az{imu}",
+                f"gx{imu}", f"gy{imu}", f"gz{imu}",
+            ])
+
+        return columns
+
+    def _validate_record(self, df, path):
+        """Strict validation before converting a recording."""
+
+        required = self._required_columns()
+
+        missing = [c for c in required if c not in df.columns]
+
+        if missing:
+            raise ValueError(
+                f"{path.name}: missing required columns: {missing}"
+            )
+
+        if df[required].isna().any().any():
+            raise ValueError(
+                f"{path.name}: required columns contain missing values"
+            )
+
+        if not pd.api.types.is_numeric_dtype(df["time"]):
+            raise ValueError(
+                f"{path.name}: time column is not numeric"
+            )
+
+        for c in required:
+            if c == "label":
+                continue
+
+            if not pd.api.types.is_numeric_dtype(df[c]):
+                raise ValueError(
+                    f"{path.name}: column '{c}' is not numeric"
+                )
+
+    def load(self):
+
+        records = self.discover()
+
+        print(f"Discovered Four-IMU recordings: {len(records)}")
+
+        if not records:
+            raise RuntimeError(
+                "No Four-IMU recording CSV files were discovered."
+            )
+
+        standardized_records = []
+        skipped = 0
+
+        for record in records:
+
+            path = record["path"]
+
+            try:
+                df = pd.read_csv(path)
+
+                df.columns = [
+                    str(c).strip().lower()
+                    for c in df.columns
+                ]
+
+                self._validate_record(df, path)
+
+                # Keep the original timestamp exactly as supplied.
+                # The README defines time as seconds since recording start.
+                time = df["time"].to_numpy()
+
+                chunks = []
+
+                for imu in range(1, 5):
+
+                    chunk = pd.DataFrame({
+                        "timestamp": time,
+
+                        "sensor_id": f"IMU{imu}",
+
+                        "ax": df[f"ax{imu}"].to_numpy(),
+                        "ay": df[f"ay{imu}"].to_numpy(),
+                        "az": df[f"az{imu}"].to_numpy(),
+
+                        "gx": df[f"gx{imu}"].to_numpy(),
+                        "gy": df[f"gy{imu}"].to_numpy(),
+                        "gz": df[f"gz{imu}"].to_numpy(),
+
+                        # Four-IMU dataset has no magnetometer.
+                        "mx": np.nan,
+                        "my": np.nan,
+                        "mz": np.nan,
+
+                        "label": df["label"].to_numpy(),
+
+                        # Dataset contains one pregnant mother.
+                        "subject_id": "single_subject",
+
+                        "dataset_source": "FOUR_IMU",
+
+                        "record_id": record["record_id"],
+
+                        "sub_dataset": record["sub_dataset"],
+                    })
+
+                    chunks.append(chunk)
+
+                standardized_records.append(
+                    pd.concat(chunks, ignore_index=True)
+                )
+
+            except Exception as e:
+
+                skipped += 1
+
+                print(
+                    f"Skipping {path.name}: {e}"
+                )
+
+        if not standardized_records:
+            raise RuntimeError(
+                "Four-IMU files were discovered, but none passed "
+                "schema/data validation."
+            )
+
+        self.raw_data = pd.concat(
+            standardized_records,
+            ignore_index=True
+        )
+
+        self.raw_data = self.raw_data[
+            self.STANDARD_COLUMNS
+        ]
+
+        # Final contract validation.
+        expected = set(self.STANDARD_COLUMNS)
+
+        if set(self.raw_data.columns) != expected:
+            raise RuntimeError(
+                "Four-IMU standardized schema validation failed."
+            )
+
+        sensor_columns = [
+            "ax", "ay", "az",
+            "gx", "gy", "gz"
+        ]
+
+        if self.raw_data[sensor_columns].isna().any().any():
+            raise RuntimeError(
+                "Four-IMU accelerometer/gyroscope data contains "
+                "unexpected missing values."
+            )
+
+        self.metadata = {
+            "dataset_name":
+                "Fetal Movement Dataset Recorded Using Four IMUs",
+
+            "rows":
+                len(self.raw_data),
+
+            "raw_recordings_discovered":
+                len(records),
+
+            "recordings_loaded":
+                self.raw_data["record_id"].nunique(),
+
+            "recordings_skipped":
+                skipped,
+
+            "subjects":
+                self.raw_data["subject_id"].nunique(),
+
+            "sub_datasets":
+                self.raw_data["sub_dataset"].nunique(),
+
+            "labels":
+                self.raw_data["label"].nunique(),
+
+            "imu_count":
+                self.raw_data["sensor_id"].nunique(),
+
+            "sampling_rate_hz":
+                30.0,
+
+            "accelerometer_available":
+                True,
+
+            "gyroscope_available":
+                True,
+
+            "magnetometer_available":
+                False,
+
+            "columns":
+                list(self.raw_data.columns),
+        }
+
+        return self.raw_data
+
+
+
+
+#============================================================================================================================================
+#============================================================================================================================================
+
+
+
+
+
+
+#======================================================================
+#OXFORD Dataset Loader
+#======================================================================
+
+class OxfordLoader(BaseDatasetLoader):
+    """
+    Loader for the Oxford Female Fetal Dataset.
+
+    Expected structure:
+
+    oxford_female/
+        154100_signal.mat
+        154100_bp.mat
+        450569_signal.mat
+        450569_bp.mat
+        ...
+
+    Signal variable:
+        BCG_PREPROC_3AXIS
+
+    Label variable:
+        BP_MOUV_FILES
+
+    Oxford is NOT an IMU dataset.
+
+    Therefore:
+        BCG_PREPROC_3AXIS -> bcg_x, bcg_y, bcg_z
+
+    Accelerometer:
+        ax, ay, az -> NaN
+
+    Gyroscope:
+        gx, gy, gz -> NaN
+
+    Magnetometer:
+        mx, my, mz -> NaN
+    """
+
+    def __init__(self, root_path):
+
+        super().__init__(root_path, "Oxford Female Fetal Dataset")
+
+        self.root_path = Path(root_path)
+
+        self.raw_data = None
+        self.metadata = {}
+
+        self.signal_variable = "BCG_PREPROC_3AXIS"
+        self.label_variable = "BP_MOUV_FILES"
+
+    # ============================================================
+    # DISCOVERY
+    # ============================================================
+
+    def discover(self):
+        """
+        Discover and pair Oxford signal and BP MATLAB files.
+        """
+
+        if not self.root_path.exists():
+            raise FileNotFoundError(
+                f"Oxford dataset path does not exist:\n"
+                f"{self.root_path}"
+            )
+
+        signal_files = sorted(
+            self.root_path.rglob("*_signal.mat")
+        )
+
+        bp_files = sorted(
+            self.root_path.rglob("*_bp.mat")
+        )
+
+        signal_map = {
+            file.name.replace("_signal.mat", ""): file
+            for file in signal_files
+        }
+
+        bp_map = {
+            file.name.replace("_bp.mat", ""): file
+            for file in bp_files
+        }
+
+        record_ids = sorted(
+            set(signal_map.keys()) |
+            set(bp_map.keys())
+        )
+
+        records = []
+
+        for record_id in record_ids:
+
+            records.append({
+                "record_id": record_id,
+
+                "signal_file":
+                    signal_map.get(record_id),
+
+                "bp_file":
+                    bp_map.get(record_id)
+            })
+
+        self.records = records
+
+        return records
+
+    # ============================================================
+    # LOAD
+    # ============================================================
+
+    def load(self):
+
+        records = self.discover()
+
+        print(
+            f"Discovered Oxford records: "
+            f"{len(records)}"
+        )
+
+        if not records:
+
+            raise RuntimeError(
+                "No Oxford signal/BP records were discovered.\n"
+                f"Dataset root checked:\n"
+                f"{self.root_path}"
+            )
+
+        loaded_records = []
+
+        records_loaded = 0
+        records_skipped = 0
+
+        total_signal_samples = 0
+        total_label_samples = 0
+        total_aligned_samples = 0
+
+        truncated_records = []
+
+        # ========================================================
+        # PROCESS EVERY RECORD
+        # ========================================================
+
+        for record in records:
+
+            record_id = record["record_id"]
+
+            signal_file = record["signal_file"]
+            bp_file = record["bp_file"]
+
+            # ----------------------------------------------------
+            # Require both files
+            # ----------------------------------------------------
+
+            if signal_file is None:
+
+                print(
+                    f"Skipping {record_id}: "
+                    f"signal file missing"
+                )
+
+                records_skipped += 1
+                continue
+
+            if bp_file is None:
+
+                print(
+                    f"Skipping {record_id}: "
+                    f"BP file missing"
+                )
+
+                records_skipped += 1
+                continue
+
+            try:
+
+                # =================================================
+                # LOAD SIGNAL MAT
+                # =================================================
+
+                signal_mat = scipy.io.loadmat(
+                    signal_file
+                )
+
+                if self.signal_variable not in signal_mat:
+
+                    print(
+                        f"Skipping {record_id}: "
+                        f"signal variable "
+                        f"'{self.signal_variable}' "
+                        f"not found"
+                    )
+
+                    records_skipped += 1
+                    continue
+
+                signal = np.asarray(
+                    signal_mat[self.signal_variable]
+                )
+
+                # -------------------------------------------------
+                # Validate signal shape
+                # -------------------------------------------------
+
+                if signal.ndim != 2:
+
+                    print(
+                        f"Skipping {record_id}: "
+                        f"unexpected signal dimensions "
+                        f"{signal.shape}"
+                    )
+
+                    records_skipped += 1
+                    continue
+
+                if signal.shape[1] != 3:
+
+                    print(
+                        f"Skipping {record_id}: "
+                        f"expected 3 BCG axes, "
+                        f"got shape {signal.shape}"
+                    )
+
+                    records_skipped += 1
+                    continue
+
+                # =================================================
+                # LOAD BP MAT
+                # =================================================
+
+                bp_mat = scipy.io.loadmat(
+                    bp_file
+                )
+
+                if self.label_variable not in bp_mat:
+
+                    print(
+                        f"Skipping {record_id}: "
+                        f"label variable "
+                        f"'{self.label_variable}' "
+                        f"not found"
+                    )
+
+                    records_skipped += 1
+                    continue
+
+                labels = np.asarray(
+                    bp_mat[self.label_variable]
+                ).reshape(-1)
+
+                # =================================================
+                # RECORD ORIGINAL LENGTHS
+                # =================================================
+
+                signal_length = len(signal)
+                label_length = len(labels)
+
+                total_signal_samples += signal_length
+                total_label_samples += label_length
+
+                # =================================================
+                # ALIGN SIGNAL AND LABEL
+                # =================================================
+
+                aligned_length = min(
+                    signal_length,
+                    label_length
+                )
+
+                if aligned_length == 0:
+
+                    print(
+                        f"Skipping {record_id}: "
+                        f"empty signal or label array"
+                    )
+
+                    records_skipped += 1
+                    continue
+
+                if signal_length != label_length:
+
+                    print(
+                        f"Warning: {record_id} length mismatch "
+                        f"(signal={signal_length}, "
+                        f"labels={label_length}). "
+                        f"Truncating both to "
+                        f"{aligned_length} samples."
+                    )
+
+                    truncated_records.append({
+                        "record_id": record_id,
+                        "signal_length": signal_length,
+                        "label_length": label_length,
+                        "aligned_length": aligned_length
+                    })
+
+                signal = signal[
+                    :aligned_length
+                ]
+
+                labels = labels[
+                    :aligned_length
+                ]
+
+                total_aligned_samples += aligned_length
+
+                # =================================================
+                # CREATE STANDARDIZED RECORD
+                # =================================================
+
+                standardized = pd.DataFrame({
+
+                    # Oxford has no physical timestamp
+                    # available in the MAT signal itself.
+                    # Therefore use sample index.
+                    "timestamp":
+                        np.arange(
+                            aligned_length,
+                            dtype=np.int64
+                        ),
+
+                    "sensor_id":
+                        "BCG_3AXIS",
+
+                    # ---------------------------------------------
+                    # IMU fields intentionally remain NaN
+                    # ---------------------------------------------
+
+                    "ax":
+                        np.nan,
+
+                    "ay":
+                        np.nan,
+
+                    "az":
+                        np.nan,
+
+                    "gx":
+                        np.nan,
+
+                    "gy":
+                        np.nan,
+
+                    "gz":
+                        np.nan,
+
+                    "mx":
+                        np.nan,
+
+                    "my":
+                        np.nan,
+
+                    "mz":
+                        np.nan,
+
+                    # ---------------------------------------------
+                    # Actual Oxford BCG channels
+                    # ---------------------------------------------
+
+                    "bcg_x":
+                        signal[:, 0],
+
+                    "bcg_y":
+                        signal[:, 1],
+
+                    "bcg_z":
+                        signal[:, 2],
+
+                    # ---------------------------------------------
+                    # Movement label
+                    # ---------------------------------------------
+
+                    "label":
+                        labels,
+
+                    "subject_id":
+                        "oxford_female",
+
+                    "dataset_source":
+                        "OXFORD",
+
+                    "record_id":
+                        record_id
+                })
+
+                loaded_records.append(
+                    standardized
+                )
+
+                records_loaded += 1
+
+            except Exception as e:
+
+                print(
+                    f"Skipping Oxford record "
+                    f"{record_id}: {e}"
+                )
+
+                records_skipped += 1
+
+        # ========================================================
+        # VALIDATION
+        # ========================================================
+
+        if not loaded_records:
+
+            raise RuntimeError(
+                "Oxford records were discovered, "
+                "but no valid records could be loaded."
+            )
+
+        # ========================================================
+        # COMBINE
+        # ========================================================
+
+        self.raw_data = pd.concat(
+            loaded_records,
+            ignore_index=True
+        )
+
+        # ========================================================
+        # STANDARDIZED SCHEMA
+        # ========================================================
+
+        required_schema = [
+
+            "timestamp",
+            "sensor_id",
+
+            "ax",
+            "ay",
+            "az",
+
+            "gx",
+            "gy",
+            "gz",
+
+            "mx",
+            "my",
+            "mz",
+
+            "bcg_x",
+            "bcg_y",
+            "bcg_z",
+
+            "label",
+            "subject_id",
+
+            "dataset_source",
+            "record_id"
+        ]
+
+        # --------------------------------------------------------
+        # Guarantee all columns exist
+        # --------------------------------------------------------
+
+        for column in required_schema:
+
+            if column not in self.raw_data.columns:
+
+                self.raw_data[column] = np.nan
+
+        # --------------------------------------------------------
+        # Keep only common standardized schema
+        # --------------------------------------------------------
+
+        self.raw_data = self.raw_data[
+            required_schema
+        ]
+
+        # ========================================================
+        # METADATA
+        # ========================================================
+
+        self.metadata = {
+
+            "dataset_name":
+                "Oxford Female Fetal Dataset",
+
+            "rows":
+                len(self.raw_data),
+
+            "records_discovered":
+                len(records),
+
+            "records_loaded":
+                records_loaded,
+
+            "records_skipped":
+                records_skipped,
+
+            "records_truncated":
+                len(truncated_records),
+
+            "subjects":
+                self.raw_data[
+                    "subject_id"
+                ].nunique(),
+
+            "labels":
+                self.raw_data[
+                    "label"
+                ].nunique(),
+
+            "signal_variable":
+                self.signal_variable,
+
+            "label_variable":
+                self.label_variable,
+
+            "signal_type":
+                "BCG",
+
+            "signal_axes":
+                3,
+
+            "sampling_rate_hz":
+                None,
+
+            "timestamp_unit":
+                "sample_index",
+
+            "original_signal_samples":
+                total_signal_samples,
+
+            "original_label_samples":
+                total_label_samples,
+
+            "aligned_samples":
+                total_aligned_samples,
+
+            "accelerometer_available":
+                False,
+
+            "gyroscope_available":
+                False,
+
+            "magnetometer_available":
+                False,
+
+            "bcg_available":
+                True,
+
+            "columns":
+                list(self.raw_data.columns),
+
+            "truncated_records":
+                truncated_records
         }
 
         return self.raw_data
