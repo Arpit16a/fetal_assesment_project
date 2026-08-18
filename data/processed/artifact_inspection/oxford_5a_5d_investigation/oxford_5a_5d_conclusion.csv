@@ -1,0 +1,5 @@
+check,result
+Oxford accelerometer available,False
+Oxford gyroscope available,False
+Oxford BCG available,True
+Current IMU candidate rule applicable,False

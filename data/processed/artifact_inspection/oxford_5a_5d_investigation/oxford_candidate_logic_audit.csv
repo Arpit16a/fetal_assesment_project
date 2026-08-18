@@ -1,0 +1,4 @@
+feature_group,required_features,available_features,available_feature_names
+acceleration,4,0,
+jerk,2,0,
+gyroscope,4,0,

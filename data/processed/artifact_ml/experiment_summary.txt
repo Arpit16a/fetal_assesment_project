@@ -1,0 +1,30 @@
+ARTIFACT ML BASELINE EXPERIMENT
+================================================================================
+
+Step 5: Baseline artifact models
+Step 6: Subject-independent validation
+
+Label policy:
+  artifact     -> 1
+  likely_fetal -> 0
+  uncertain    -> excluded
+
+Dataset validation
+--------------------------------------------------------------------------------
+ dataset               status  candidate_events  supervised_events  uncertain_events  unlabeled_events  subjects  features  artifact_events  likely_fetal_events
+   COUGH NO_SUPERVISED_EVENTS                 4                  0                 0                 0         0         0                0                    0
+FOUR_IMU NO_SUPERVISED_EVENTS              2888                  0                 0                 0         0         0                0                    0
+  OXFORD          LOAD_FAILED                 0                  0                 0                 0         0         0                0                    0
+
+Model comparison
+--------------------------------------------------------------------------------
+No valid subject-independent model results were produced.
+
+
+Scientific notes
+--------------------------------------------------------------------------------
+1. Events from the same subject are never split between train and test folds.
+2. FOUR_IMU currently contains one subject, so subject-independent validation is not possible.
+3. OXFORD currently contains no candidate events and cannot support supervised artifact ML.
+4. Uncertain and unlabeled events are excluded from supervised training.
+5. This experiment does not perform artifact removal.
