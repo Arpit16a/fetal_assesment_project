@@ -969,6 +969,12 @@ def extract_segment_features(
         "sampling_rate_hz":
             sampling_rate,
 
+        "start_timestamp":
+            start_timestamp, 
+
+        "end_timestamp":
+             end_timestamp,   
+
     }
 
 
@@ -2016,6 +2022,9 @@ def process_dataset(
                     ].iloc[0]
                 )
 
+            if "label" in clean_segment.columns:
+                mode = clean_segment["label"].mode()
+                row["true_label"] = str(mode.iloc[0]) if not mode.empty else None
 
             feature_rows.append(
                 row
