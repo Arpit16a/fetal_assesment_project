@@ -1,13 +1,27 @@
 """
 Master validation script for the dataset loader layer.
 
-Validates the three currently configured fetal/multimodal loaders:
+Validates the currently configured datasets:
+
     - Multimodal Cough Dataset
     - Four-IMU fetal movement dataset
     - Oxford female fetal dataset
 
-The script intentionally validates the loader outputs rather than performing
-signal processing. A failed loader validation should block downstream work.
+The master test validates the complete loader lifecycle:
+
+    discover()
+        ↓
+    load()
+        ↓
+    standardize()
+        ↓
+    StandardizedData
+
+The script intentionally validates the loader layer only.
+It does not perform signal processing, artifact detection,
+feature extraction, behavioral analysis, or machine learning.
+
+A failed loader validation should block downstream work.
 """
 
 from __future__ import annotations
@@ -17,27 +31,14 @@ from typing import Any
 
 import pandas as pd
 
-from dataset import CoughLoader, FourIMULoader, OxfordLoader
-
-
-# =============================================================================
-# CONCRETE TEST LOADERS
-# =============================================================================
-
-class ConcreteFourIMULoader(FourIMULoader):
-    """Concrete Four-IMU loader used only for validation instantiation."""
-
-    def standardize(self, data: pd.DataFrame | None = None):
-        """Return already-standardized Four-IMU data unchanged."""
-        return self.raw_data if data is None else data
-
-
-class ConcreteOxfordLoader(OxfordLoader):
-    """Concrete Oxford loader used only for validation instantiation."""
-
-    def standardize(self, data: pd.DataFrame | None = None):
-        """Return already-standardized Oxford data unchanged."""
-        return self.raw_data if data is None else data
+from dataset import (
+    STANDARD_COLUMNS,
+    BaseDatasetLoader,
+    CoughLoader,
+    FourIMULoader,
+    OxfordLoader,
+    StandardizedData,
+)
 
 
 # =============================================================================
@@ -84,22 +85,18 @@ COMMON_COLUMNS = [
     "ax", "ay", "az",
     "gx", "gy", "gz",
     "mx", "my", "mz",
+    "bcg_x", "bcg_y", "bcg_z",
     "label",
     "subject_id",
     "dataset_source",
+    "record_id",
 ]
 
-OPTIONAL_COLUMNS = {
-    "COUGH": ["audio_available"],
-    "FOUR_IMU": ["record_id", "sub_dataset"],
-    "OXFORD": ["record_id", "bcg_x", "bcg_y", "bcg_z"],
+DATASET_EXPECTED_SOURCES = {
+    "COUGH": "COUGH",
+    "FOUR_IMU": "FOUR_IMU",
+    "OXFORD": "OXFORD",
 }
-
-SIGNAL_COLUMNS = [
-    "ax", "ay", "az",
-    "gx", "gy", "gz",
-    "mx", "my", "mz",
-]
 
 
 # =============================================================================
@@ -108,85 +105,200 @@ SIGNAL_COLUMNS = [
 
 def print_header(title: str) -> None:
     """Print a consistent section header."""
+
     print("\n")
     print("=" * 80)
     print(title)
     print("=" * 80)
 
 
-def validate_optional_fields(
-    data: pd.DataFrame,
-    loader: Any,
-    expected_source: str,
-) -> None:
-    """Report dataset-specific fields without making optional fields mandatory."""
-    print("\nDataset-specific validation:")
-
-    for column in OPTIONAL_COLUMNS.get(expected_source, []):
-        if column in data.columns:
-            if column.startswith("bcg_"):
-                count = data[column].notna().sum()
-                print(f"  ✓ {column}: {count:,} valid samples")
-            else:
-                print(f"  ✓ {column}: present")
-            continue
-
-        if column == "audio_available" and column in loader.metadata:
-            print(f"  ✓ {column}: {loader.metadata[column]}")
-        else:
-            print(f"  - {column}: not present")
-
-
-def validate_loader(
-    name: str,
-    loader: Any,
-    expected_source: str,
+def validate_loader_interface(
+    loader: BaseDatasetLoader,
 ) -> bool:
-    """Load one dataset and validate the common loader contract."""
-    print_header(f"{name} LOADER VALIDATION")
+    """
+    Validate that the object follows the BaseDatasetLoader abstraction.
+    """
 
-    # -------------------------------------------------------------------------
-    # Load
-    # -------------------------------------------------------------------------
-    try:
-        data = loader.load()
-    except Exception as exc:
-        print("\n❌ LOAD FAILED")
-        print(f"{type(exc).__name__}: {exc}")
+    required_methods = [
+        "discover",
+        "load",
+        "standardize",
+        "run",
+    ]
+
+    missing_methods = [
+        method
+        for method in required_methods
+        if not callable(
+            getattr(loader, method, None)
+        )
+    ]
+
+    if missing_methods:
+
+        print(
+            "\n❌ Loader interface invalid."
+        )
+
+        print(
+            f"Missing methods: {missing_methods}"
+        )
+
         return False
 
-    print("\n✓ Loader executed successfully")
-    print("\nShape:")
-    print(data.shape)
+    if not isinstance(
+        loader,
+        BaseDatasetLoader,
+    ):
+
+        print(
+            "\n❌ Loader does not inherit "
+            "from BaseDatasetLoader."
+        )
+
+        return False
+
+    print(
+        "\n✓ BaseDatasetLoader interface validated"
+    )
+
+    return True
+
+
+def validate_standardized_output(
+    standardized: StandardizedData,
+    expected_source: str,
+) -> bool:
+    """
+    Validate the StandardizedData object returned by loader.run().
+    """
+
+    if not isinstance(
+        standardized,
+        StandardizedData,
+    ):
+
+        print(
+            "\n❌ Loader did not return "
+            "StandardizedData."
+        )
+
+        print(
+            f"Returned type: "
+            f"{type(standardized).__name__}"
+        )
+
+        return False
+
+    data = standardized.data
+
+    print(
+        "\nStandardizedData object:"
+    )
+
+    print(
+        f"  Dataset name: "
+        f"{standardized.dataset_name}"
+    )
+
+    print(
+        f"  Sampling rate: "
+        f"{standardized.sampling_rate}"
+    )
+
+    print(
+        f"  Shape: "
+        f"{data.shape}"
+    )
 
     # -------------------------------------------------------------------------
     # Schema
     # -------------------------------------------------------------------------
+
     missing_columns = [
-        column for column in COMMON_COLUMNS if column not in data.columns
+        column
+        for column in COMMON_COLUMNS
+        if column not in data.columns
     ]
 
     if missing_columns:
-        print(f"\n❌ Missing common columns: {missing_columns}")
+
+        print(
+            f"\n❌ Missing common columns: "
+            f"{missing_columns}"
+        )
+
         return False
 
-    print("\n✓ Common schema present")
+    print(
+        "\n✓ Complete common schema present"
+    )
 
-    duplicated_columns = data.columns[data.columns.duplicated()].tolist()
+    # -------------------------------------------------------------------------
+    # Compare against canonical schema
+    # -------------------------------------------------------------------------
+
+    missing_canonical = [
+        column
+        for column in STANDARD_COLUMNS
+        if column not in data.columns
+    ]
+
+    if missing_canonical:
+
+        print(
+            f"\n❌ Missing canonical columns: "
+            f"{missing_canonical}"
+        )
+
+        return False
+
+    print(
+        "✓ Canonical STANDARD_COLUMNS present"
+    )
+
+    # -------------------------------------------------------------------------
+    # Duplicate columns
+    # -------------------------------------------------------------------------
+
+    duplicated_columns = (
+        data.columns[
+            data.columns.duplicated()
+        ].tolist()
+    )
+
     if duplicated_columns:
-        print(f"\n❌ Duplicate columns: {duplicated_columns}")
+
+        print(
+            f"\n❌ Duplicate columns: "
+            f"{duplicated_columns}"
+        )
+
         return False
 
-    print("✓ No duplicate columns")
+    print(
+        "✓ No duplicate columns"
+    )
 
     # -------------------------------------------------------------------------
     # Basic dataset integrity
     # -------------------------------------------------------------------------
+
     if len(data) == 0:
-        print("\n❌ Dataset is empty")
+
+        print(
+            "\n❌ Dataset is empty"
+        )
+
         return False
 
-    print("✓ Dataset is non-empty")
+    print(
+        "✓ Dataset is non-empty"
+    )
+
+    # -------------------------------------------------------------------------
+    # Dataset source
+    # -------------------------------------------------------------------------
 
     sources = (
         data["dataset_source"]
@@ -195,65 +307,228 @@ def validate_loader(
         .tolist()
     )
 
-    print("\nDataset sources:")
+    print(
+        "\nDataset sources:"
+    )
+
     print(sources)
 
     if expected_source not in sources:
-        print(f"\n❌ Expected source '{expected_source}' not found")
+
+        print(
+            f"\n❌ Expected source "
+            f"'{expected_source}' not found"
+        )
+
         return False
 
-    print("✓ Dataset source validated")
+    print(
+        "✓ Dataset source validated"
+    )
 
     # -------------------------------------------------------------------------
     # Subject validation
     # -------------------------------------------------------------------------
-    print("\nUnique subjects:", data["subject_id"].nunique())
+
+    print(
+        "\nUnique subjects:",
+        data["subject_id"].nunique(),
+    )
 
     if data["subject_id"].isna().any():
-        print("❌ Missing subject IDs")
+
+        print(
+            "❌ Missing subject IDs"
+        )
+
         return False
 
-    print("✓ Subject IDs valid")
+    print(
+        "✓ Subject IDs valid"
+    )
 
     # -------------------------------------------------------------------------
     # Timestamp validation
     # -------------------------------------------------------------------------
+
     if data["timestamp"].isna().any():
-        print("\n❌ Missing timestamps")
+
+        print(
+            "\n❌ Missing timestamps"
+        )
+
         return False
 
-    print("✓ Timestamp field valid")
+    print(
+        "✓ Timestamp field valid"
+    )
 
     # -------------------------------------------------------------------------
     # Label validation
     # -------------------------------------------------------------------------
+
     if data["label"].isna().any():
-        print("\n❌ Missing labels")
+
+        print(
+            "\n❌ Missing labels"
+        )
+
         return False
 
-    print("✓ Labels valid")
-    print("\nLabel distribution:")
-    print(data["label"].value_counts(dropna=False).sort_index())
+    print(
+        "✓ Labels valid"
+    )
+
+    print(
+        "\nLabel distribution:"
+    )
+
+    print(
+        data["label"]
+        .value_counts(
+            dropna=False
+        )
+        .sort_index()
+    )
 
     # -------------------------------------------------------------------------
     # Signal availability
     # -------------------------------------------------------------------------
-    print("\nSignal availability:")
-    print(data[SIGNAL_COLUMNS].notna().sum())
 
-    # -------------------------------------------------------------------------
-    # Dataset-specific fields
-    # -------------------------------------------------------------------------
-    validate_optional_fields(data, loader, expected_source)
+    signal_columns = [
+        "ax", "ay", "az",
+        "gx", "gy", "gz",
+        "mx", "my", "mz",
+        "bcg_x", "bcg_y", "bcg_z",
+    ]
+
+    print(
+        "\nSignal availability:"
+    )
+
+    print(
+        data[signal_columns]
+        .notna()
+        .sum()
+    )
 
     # -------------------------------------------------------------------------
     # Metadata
     # -------------------------------------------------------------------------
-    print("\nMetadata:")
-    for key, value in loader.metadata.items():
-        print(f"  {key}: {value}")
 
-    print(f"\n✅ {name} LOADER PASSED")
+    print(
+        "\nMetadata:"
+    )
+
+    metadata = (
+        standardized.metadata
+        if standardized.metadata is not None
+        else {}
+    )
+
+    if metadata:
+
+        for key, value in metadata.items():
+
+            print(
+                f"  {key}: {value}"
+            )
+
+    else:
+
+        print(
+            "  No additional metadata."
+        )
+
+    return True
+
+
+def validate_loader(
+    name: str,
+    loader: BaseDatasetLoader,
+    expected_source: str,
+) -> bool:
+    """
+    Execute and validate one complete dataset loader.
+    """
+
+    print_header(
+        f"{name} LOADER VALIDATION"
+    )
+
+    # -------------------------------------------------------------------------
+    # Interface
+    # -------------------------------------------------------------------------
+
+    if not validate_loader_interface(
+        loader
+    ):
+
+        return False
+
+    # -------------------------------------------------------------------------
+    # Path
+    # -------------------------------------------------------------------------
+
+    print(
+        "\nDataset path:"
+    )
+
+    print(
+        loader.root_path
+    )
+
+    if not loader.root_path.exists():
+
+        print(
+            "\n❌ Dataset path does not exist."
+        )
+
+        return False
+
+    print(
+        "✓ Dataset path exists"
+    )
+
+    # -------------------------------------------------------------------------
+    # Complete lifecycle
+    # -------------------------------------------------------------------------
+
+    try:
+
+        standardized = loader.run()
+
+    except Exception as exc:
+
+        print(
+            "\n❌ LOADER EXECUTION FAILED"
+        )
+
+        print(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return False
+
+    print(
+        "\n✓ Complete loader lifecycle executed"
+    )
+
+    # -------------------------------------------------------------------------
+    # Standardized output
+    # -------------------------------------------------------------------------
+
+    if not validate_standardized_output(
+        standardized,
+        expected_source,
+    ):
+
+        return False
+
+    print(
+        f"\n✅ {name} LOADER PASSED"
+    )
+
     return True
 
 
@@ -262,73 +537,171 @@ def validate_loader(
 # =============================================================================
 
 def main() -> int:
-    """Run all configured loader validations and return a process status."""
-    print_header("MASTER DATASET LOADER VALIDATION")
+    """Run all configured loader validations."""
 
-    print("\nDataset paths:")
-    print("COUGH:")
-    print(COUGH_PATH)
-    print("\nFOUR-IMU:")
-    print(FOUR_IMU_PATH)
-    print("\nOXFORD:")
-    print(OXFORD_PATH)
+    print_header(
+        "MASTER DATASET LOADER VALIDATION"
+    )
+
+    # -------------------------------------------------------------------------
+    # Dataset paths
+    # -------------------------------------------------------------------------
+
+    print(
+        "\nDataset paths:"
+    )
+
+    print(
+        "\nCOUGH:"
+    )
+
+    print(
+        COUGH_PATH
+    )
+
+    print(
+        "\nFOUR-IMU:"
+    )
+
+    print(
+        FOUR_IMU_PATH
+    )
+
+    print(
+        "\nOXFORD:"
+    )
+
+    print(
+        OXFORD_PATH
+    )
 
     # -------------------------------------------------------------------------
     # Create loaders
     # -------------------------------------------------------------------------
-    cough_loader = CoughLoader(COUGH_PATH)
-    four_imu_loader = ConcreteFourIMULoader(FOUR_IMU_PATH)
-    oxford_loader = ConcreteOxfordLoader(OXFORD_PATH)
+
+    try:
+
+        cough_loader = CoughLoader(
+            COUGH_PATH
+        )
+
+        four_imu_loader = FourIMULoader(
+            FOUR_IMU_PATH
+        )
+
+        oxford_loader = OxfordLoader(
+            OXFORD_PATH
+        )
+
+    except Exception as exc:
+
+        print(
+            "\n❌ LOADER INITIALIZATION FAILED"
+        )
+
+        print(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return 1
 
     # -------------------------------------------------------------------------
     # Validate loaders
     # -------------------------------------------------------------------------
+
     results = {
         "COUGH": validate_loader(
             "COUGH",
             cough_loader,
-            "COUGH",
+            DATASET_EXPECTED_SOURCES[
+                "COUGH"
+            ],
         ),
+
         "FOUR_IMU": validate_loader(
             "FOUR-IMU",
             four_imu_loader,
-            "FOUR_IMU",
+            DATASET_EXPECTED_SOURCES[
+                "FOUR_IMU"
+            ],
         ),
+
         "OXFORD": validate_loader(
             "OXFORD",
             oxford_loader,
-            "OXFORD",
+            DATASET_EXPECTED_SOURCES[
+                "OXFORD"
+            ],
         ),
     }
 
     # -------------------------------------------------------------------------
     # Final summary
     # -------------------------------------------------------------------------
-    print_header("MASTER VALIDATION SUMMARY")
+
+    print_header(
+        "MASTER VALIDATION SUMMARY"
+    )
 
     for dataset, passed in results.items():
-        status = "PASS ✓" if passed else "FAIL ❌"
-        print(f"{dataset:<15} : {status}")
+
+        status = (
+            "PASS ✓"
+            if passed
+            else
+            "FAIL ❌"
+        )
+
+        print(
+            f"{dataset:<15} : {status}"
+        )
 
     # -------------------------------------------------------------------------
     # Global result
     # -------------------------------------------------------------------------
+
     if all(results.values()):
+
         print("\n")
         print("=" * 80)
-        print("🎯 ALL DATASET LOADERS PASSED")
+        print(
+            "🎯 ALL DATASET LOADERS PASSED"
+        )
         print("=" * 80)
-        print("\nLoader layer is ready.")
-        print("Next layer: 02_signal_processing")
+
+        print(
+            "\nLoader abstraction is frozen."
+        )
+
+        print(
+            "All datasets now follow:"
+        )
+
+        print(
+            "discover() → load() → standardize() → run()"
+        )
+
+        print(
+            "\nNext layer: 02_signal_processing"
+        )
+
         return 0
 
     print("\n")
     print("=" * 80)
-    print("❌ LOADER VALIDATION FAILED")
+    print(
+        "❌ LOADER VALIDATION FAILED"
+    )
     print("=" * 80)
-    print("\nDo NOT move to signal processing yet.")
+
+    print(
+        "\nDo NOT move to signal processing yet."
+    )
+
     return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        main()
+    )
