@@ -1211,7 +1211,25 @@ class FourIMULoader(BaseDatasetLoader):
                                 "label"
                             ].to_numpy(),
 
-                            "subject_id": "single_subject",
+                            # FIX: every recording was previously
+                            # stamped with the same constant
+                            # "single_subject" ID, collapsing all 109
+                            # recordings into one fake subject —
+                            # subject-independent validation was
+                            # structurally impossible on this dataset.
+                            #
+                            # IMPORTANT CAVEAT: the raw Four-IMU files
+                            # carry no explicit subject/participant
+                            # field, only a record filename. Using
+                            # record_id here is a per-RECORDING proxy,
+                            # not a verified per-PERSON identity — if
+                            # the source dataset's documentation
+                            # confirms multiple files belong to the
+                            # same participant, replace this with the
+                            # true participant ID. Until then, treat
+                            # downstream "subject-independent" claims
+                            # on Four-IMU as "record-independent."
+                            "subject_id": record["record_id"],
 
                             "dataset_source": "FOUR_IMU",
 
@@ -1289,6 +1307,12 @@ class FourIMULoader(BaseDatasetLoader):
                 "magnetometer_available": False,
                 "bcg_available": False,
 
+                "subject_id_is_verified_identity": False,
+                "subject_id_proxy": (
+                    "record_id (one recording session, not a "
+                    "confirmed per-participant identity)"
+                ),
+
                 "columns": list(
                     standardized.columns
                 ),
@@ -1318,6 +1342,13 @@ class OxfordLoader(BaseDatasetLoader):
         super().__init__(
             root_path=root_path,
             dataset_name="Oxford Female Fetal Dataset",
+            # FIX: the loader previously reported sampling_rate=None,
+            # forcing every downstream consumer to guess or hardcode
+            # this value separately (it was silently re-declared in
+            # signal_processing/config.py instead). 500 Hz is the
+            # documented ADXL355 rate for this dataset. The loader is
+            # now the single source of truth for it.
+            sampling_rate=500.0,
         )
 
         self.signal_variable = "BCG_PREPROC_3AXIS"
@@ -1605,10 +1636,20 @@ class OxfordLoader(BaseDatasetLoader):
             loaded_records.append(
                 pd.DataFrame(
                     {
-                        "timestamp": np.arange(
-                            aligned_length,
-                            dtype=np.int64,
-                        ),
+                        # FIX: timestamps were previously a raw sample
+                        # index (0, 1, 2, ...) with no time unit, which
+                        # makes every downstream Δt / sampling-rate /
+                        # duration calculation silently wrong (Δt was
+                        # always exactly "1", implying Fs ≈ 1 Hz instead
+                        # of the true 500 Hz). Converting to seconds
+                        # here, using the now-correctly-declared
+                        # self.sampling_rate, makes Oxford's timestamp
+                        # column directly comparable to Four-IMU's and
+                        # Cough's, which are already in seconds.
+                        "timestamp": (
+                                np.arange(aligned_length, dtype=np.float64)
+                                / float(self.sampling_rate)
+                            ),
 
                         "sensor_id": "BCG_3AXIS",
 
@@ -1630,7 +1671,16 @@ class OxfordLoader(BaseDatasetLoader):
 
                         "label": labels,
 
-                        "subject_id": "oxford_female",
+                        # FIX: every record was previously stamped with
+                        # the same constant "oxford_female" subject_id,
+                        # collapsing all 16 pregnant women in this
+                        # dataset into one fake subject and making
+                        # subject-independent validation impossible.
+                        # Oxford is one recording per woman (one
+                        # signal/bp file pair per record_id), so
+                        # record_id IS the correct subject identity
+                        # here — this one is verified, not a proxy.
+                        "subject_id": record_id,
 
                         "dataset_source": "OXFORD",
 
@@ -1674,7 +1724,7 @@ class OxfordLoader(BaseDatasetLoader):
                 "labels": standardized[
                     "label"
                 ].nunique(),
-                "timestamp_unit": "sample_index",
+                "timestamp_unit": "seconds",
                 "original_signal_samples":
                     total_signal_samples,
                 "original_label_samples":
@@ -1685,11 +1735,300 @@ class OxfordLoader(BaseDatasetLoader):
                 "gyroscope_available": False,
                 "magnetometer_available": False,
                 "bcg_available": True,
+
+                "subject_id_is_verified_identity": True,
+                "subject_id_proxy": (
+                    "record_id (one signal/bp file pair per "
+                    "recorded woman — verified 1:1)"
+                ),
+
                 "columns": list(
                     standardized.columns
                 ),
                 "truncated_records":
                     truncated_records,
+            }
+        )
+
+        return StandardizedData(
+            data=standardized,
+            dataset_name=self.dataset_name,
+            sampling_rate=self.sampling_rate,
+            metadata=self.metadata,
+        )
+
+# =============================================================================
+# 9. MATERNAL MPU6050 LOADER  (REAL DEPLOYMENT DATA)
+# =============================================================================
+
+class MaternalMPU6050Loader(BaseDatasetLoader):
+    """
+    Loader for real maternal wearable data collected with an MPU6050
+    (accelerometer + gyroscope only — no magnetometer, no BCG).
+
+    Expected raw CSV format, one file per recording session:
+
+        timestamp, ax, ay, az, gx, gy, gz
+
+    This loader exists so that when real maternal data arrives, it
+    enters the pipeline through the SAME contract every other loader
+    uses (discover -> load -> standardize -> StandardizedData) and
+    every downstream layer (timing, signal processing, artifact
+    handling) works on it unmodified. This is the reason the loader
+    layer was frozen: adding a new data source should never require
+    touching timing.py, the artifact scripts, or anything downstream.
+
+    IMPORTANT DIFFERENCES FROM THE DEVELOPMENT DATASETS
+    -----------------------------------------------------
+    1. No ground-truth label exists yet. `StandardizedData.validate()`
+       requires a non-null `label` column, so this loader fills it
+       with the literal string "unlabeled" rather than leaving NaN —
+       this is a placeholder, not a real class, and is flagged in
+       metadata (`has_ground_truth_labels: False`) so downstream
+       code (e.g. the label-validation / weak-label logic built for
+       COUGH) does not mistake it for real supervision.
+    2. Sampling rate is NOT assumed. MPU6050 recordings over
+       Bluetooth/serial commonly have irregular effective sampling —
+       this loader estimates it from the actual timestamp column
+       (median Δt) rather than hardcoding a nominal rate, and reports
+       it in metadata for the timing layer to audit properly.
+    3. subject_id is derived from the filename stem by default
+       (one file = one recording session/subject), matching the same
+       proxy policy now used for Four-IMU. Pass `subject_id_column=`
+       if the real CSVs end up carrying an explicit subject/session
+       field instead.
+    """
+
+    def __init__(
+        self,
+        root_path: str | Path,
+        subject_id_column: Optional[str] = None,
+        file_pattern: str = "*.csv",
+    ) -> None:
+
+        super().__init__(
+            root_path=root_path,
+            dataset_name="Maternal MPU6050 Wearable Dataset",
+            # Sampling rate is NOT hardcoded here — see load().
+            sampling_rate=None,
+        )
+
+        self.subject_id_column = subject_id_column
+        self.file_pattern = file_pattern
+        self.record_files: list[dict] = []
+
+    def discover(self) -> list[dict]:
+        """Discover maternal MPU6050 recording CSVs."""
+
+        records = []
+
+        for csv_file in sorted(self.root_path.rglob(self.file_pattern)):
+
+            if csv_file.is_file():
+                records.append(
+                    {
+                        "record_id": csv_file.stem,
+                        "path": csv_file,
+                    }
+                )
+
+        self.record_files = records
+
+        print(f"Discovered maternal MPU6050 recordings: {len(records)}")
+
+        return records
+
+    @staticmethod
+    def _required_columns() -> list[str]:
+        return ["timestamp", "ax", "ay", "az", "gx", "gy", "gz"]
+
+    def _validate_record(self, df: pd.DataFrame, path: Path) -> None:
+
+        required = self._required_columns()
+
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"{path.name}: missing required columns: {missing}")
+
+        if df[required].isna().any().any():
+            raise ValueError(f"{path.name}: required columns contain missing values")
+
+        for column in required:
+            if not pd.api.types.is_numeric_dtype(df[column]):
+                raise ValueError(f"{path.name}: column '{column}' is not numeric")
+
+        if not df["timestamp"].is_monotonic_increasing:
+            raise ValueError(
+                f"{path.name}: timestamp is not monotonically increasing "
+                "(check for out-of-order rows before trusting this recording)"
+            )
+
+    def load(self) -> list[dict]:
+        """Load raw maternal MPU6050 recordings. No standardization here."""
+
+        records = self.record_files
+        if not records:
+            records = self.discover()
+
+        if not records:
+            raise RuntimeError(
+                "No maternal MPU6050 recording CSV files were discovered.\n"
+                f"Checked: {self.root_path}\n"
+                f"Pattern: {self.file_pattern}"
+            )
+
+        raw_records = []
+        skipped = 0
+        estimated_rates = []
+
+        for record in records:
+
+            path = record["path"]
+
+            try:
+                df = pd.read_csv(path)
+                df.columns = [str(c).strip().lower() for c in df.columns]
+
+                self._validate_record(df, path)
+
+                # Estimate this recording's effective sampling rate
+                # from its own timestamps rather than assuming a
+                # nominal rate — real wearable data over serial/BLE
+                # commonly drifts from the nominal rate.
+                dt = df["timestamp"].diff().dropna()
+                median_dt = float(dt.median()) if len(dt) else np.nan
+
+                if median_dt and median_dt > 0:
+                    estimated_rates.append(1.0 / median_dt)
+
+                raw_records.append({"metadata": record, "data": df})
+
+            except Exception as exc:
+                skipped += 1
+                print(f"Skipping {path.name}: {exc}")
+
+        if not raw_records:
+            raise RuntimeError(
+                "Maternal MPU6050 files were discovered, but none "
+                "passed raw data validation."
+            )
+
+        self.raw_data = raw_records
+
+        # Use the median of per-recording estimated rates as the
+        # dataset-level sampling rate. Individual recordings that
+        # drift far from this should be caught by the timing layer,
+        # not silently averaged away here.
+        if estimated_rates:
+            self.sampling_rate = float(np.median(estimated_rates))
+        else:
+            self.sampling_rate = None
+
+        self.metadata = {
+            "dataset_name": self.dataset_name,
+            "raw_recordings_discovered": len(records),
+            "raw_recordings_loaded": len(raw_records),
+            "raw_recordings_skipped": skipped,
+            "sampling_rate_hz": self.sampling_rate,
+            "sampling_rate_source": "estimated_from_timestamps",
+            "per_recording_estimated_rates_hz": estimated_rates,
+        }
+
+        return self.raw_data
+
+    def standardize(self) -> StandardizedData:
+        """Convert maternal MPU6050 recordings into the common schema."""
+
+        if self.raw_data is None:
+            self.load()
+
+        standardized_records = []
+
+        for raw_record in self.raw_data:
+
+            record = raw_record["metadata"]
+            df = raw_record["data"]
+
+            if self.subject_id_column and self.subject_id_column in df.columns:
+                subject_id = str(df[self.subject_id_column].iloc[0])
+            else:
+                # Proxy: one file = one recording session/subject.
+                # See class docstring — replace with a real subject
+                # field the moment the hardware/CSV format defines one.
+                subject_id = record["record_id"]
+
+            standardized_records.append(
+                pd.DataFrame(
+                    {
+                        "timestamp": df["timestamp"].to_numpy(dtype=np.float64),
+                        "sensor_id": "MPU6050",
+
+                        "ax": df["ax"].to_numpy(),
+                        "ay": df["ay"].to_numpy(),
+                        "az": df["az"].to_numpy(),
+
+                        "gx": df["gx"].to_numpy(),
+                        "gy": df["gy"].to_numpy(),
+                        "gz": df["gz"].to_numpy(),
+
+                        "mx": np.nan,
+                        "my": np.nan,
+                        "mz": np.nan,
+
+                        "bcg_x": np.nan,
+                        "bcg_y": np.nan,
+                        "bcg_z": np.nan,
+
+                        # Placeholder, not a real class — see docstring.
+                        "label": "unlabeled",
+
+                        "subject_id": subject_id,
+                        "dataset_source": "MATERNAL_MPU6050",
+                        "record_id": record["record_id"],
+                    }
+                )
+            )
+
+        standardized = pd.concat(standardized_records, ignore_index=True)
+        standardized = ensure_standard_columns(standardized)
+        validate_standardized_data(standardized)
+
+        sensor_columns = ["ax", "ay", "az", "gx", "gy", "gz"]
+        if standardized[sensor_columns].isna().any().any():
+            raise RuntimeError(
+                "Maternal MPU6050 accelerometer/gyroscope data "
+                "contains unexpected missing values."
+            )
+
+        self.metadata.update(
+            {
+                "rows": len(standardized),
+                "recordings_loaded": standardized["record_id"].nunique(),
+                "subjects": standardized["subject_id"].nunique(),
+                "labels": standardized["label"].nunique(),
+
+                "has_ground_truth_labels": False,
+                "label_note": (
+                    "All rows are stamped 'unlabeled'. This dataset has "
+                    "no fetal-movement ground truth yet — it is the real "
+                    "deployment input the pipeline must process end to "
+                    "end, not a source of supervision."
+                ),
+
+                "accelerometer_available": True,
+                "gyroscope_available": True,
+                "magnetometer_available": False,
+                "bcg_available": False,
+
+                "subject_id_is_verified_identity": bool(self.subject_id_column),
+                "subject_id_proxy": (
+                    "explicit subject_id_column"
+                    if self.subject_id_column
+                    else "record_id (one recording session, not a "
+                    "confirmed per-participant identity)"
+                ),
+
+                "columns": list(standardized.columns),
             }
         )
 

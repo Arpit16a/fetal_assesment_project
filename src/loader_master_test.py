@@ -36,6 +36,7 @@ from dataset import (
     BaseDatasetLoader,
     CoughLoader,
     FourIMULoader,
+    MaternalMPU6050Loader,
     OxfordLoader,
     StandardizedData,
 )
@@ -74,6 +75,21 @@ OXFORD_PATH = (
     / "oxford_female"
 )
 
+# Real maternal MPU6050 data is not collected yet (expected in the
+# next ~7-8 days). This path is wired in now so that when it arrives,
+# validating it is a one-line change (set RUN_MATERNAL_MPU6050 =
+# True below) rather than new plumbing. Until the folder exists, this
+# dataset is skipped, not failed.
+MATERNAL_MPU6050_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "raw"
+    / "maternal"
+    / "mpu6050"
+)
+
+RUN_MATERNAL_MPU6050 = MATERNAL_MPU6050_PATH.exists()
+
 
 # =============================================================================
 # VALIDATION CONTRACT
@@ -96,6 +112,23 @@ DATASET_EXPECTED_SOURCES = {
     "COUGH": "COUGH",
     "FOUR_IMU": "FOUR_IMU",
     "OXFORD": "OXFORD",
+    "MATERNAL_MPU6050": "MATERNAL_MPU6050",
+}
+
+# Minimum unique subject_id values required for a dataset's loader
+# output to be considered capable of subject-independent validation.
+# COUGH's folder-per-subject structure and Oxford's one-file-per-woman
+# structure both give real subject identity, so both are held to a
+# real minimum. FOUR_IMU's subject_id is currently a record-level
+# proxy (see dataset.py docstring), so its minimum is set low and
+# should be raised once true participant identity is confirmed.
+# MATERNAL_MPU6050 has no minimum yet — there may be exactly one
+# maternal test recording at first, and that's expected, not a bug.
+MIN_EXPECTED_SUBJECTS = {
+    "COUGH": 2,
+    "FOUR_IMU": 2,
+    "OXFORD": 2,
+    "MATERNAL_MPU6050": None,
 }
 
 
@@ -330,9 +363,11 @@ def validate_standardized_output(
     # Subject validation
     # -------------------------------------------------------------------------
 
+    unique_subjects = data["subject_id"].nunique()
+
     print(
         "\nUnique subjects:",
-        data["subject_id"].nunique(),
+        unique_subjects,
     )
 
     if data["subject_id"].isna().any():
@@ -345,6 +380,35 @@ def validate_standardized_output(
 
     print(
         "✓ Subject IDs valid"
+    )
+
+    # -------------------------------------------------------------------------
+    # Subject diversity — catches the "everything is one fake subject"
+    # bug class, which passed silently before because this check
+    # only looked for NaN, never for collapsed/constant subject_id.
+    # That bug is what made subject-independent validation (Step 6)
+    # impossible on FOUR_IMU and OXFORD despite both loaders "passing."
+    # -------------------------------------------------------------------------
+
+    min_expected = MIN_EXPECTED_SUBJECTS.get(expected_source)
+
+    if min_expected is not None and unique_subjects < min_expected:
+
+        print(
+            f"\n❌ Subject diversity too low: {unique_subjects} unique "
+            f"subject(s), expected at least {min_expected}. "
+            "Subject-independent validation is not possible on this "
+            "output — check whether subject_id is a real identity or "
+            "an accidentally-constant/proxy value."
+        )
+
+        return False
+
+    print(
+        f"✓ Subject diversity check passed "
+        f"(>= {min_expected} expected)"
+        if min_expected is not None
+        else "✓ Subject diversity check skipped (no minimum configured)"
     )
 
     # -------------------------------------------------------------------------
@@ -575,6 +639,23 @@ def main() -> int:
         OXFORD_PATH
     )
 
+    if RUN_MATERNAL_MPU6050:
+
+        print(
+            "\nMATERNAL MPU6050:"
+        )
+
+        print(
+            MATERNAL_MPU6050_PATH
+        )
+
+    else:
+
+        print(
+            "\nMATERNAL MPU6050: not yet available, skipping "
+            f"(expected path: {MATERNAL_MPU6050_PATH})"
+        )
+
     # -------------------------------------------------------------------------
     # Create loaders
     # -------------------------------------------------------------------------
@@ -591,6 +672,12 @@ def main() -> int:
 
         oxford_loader = OxfordLoader(
             OXFORD_PATH
+        )
+
+        maternal_loader = (
+            MaternalMPU6050Loader(MATERNAL_MPU6050_PATH)
+            if RUN_MATERNAL_MPU6050
+            else None
         )
 
     except Exception as exc:
@@ -634,6 +721,16 @@ def main() -> int:
             ],
         ),
     }
+
+    if RUN_MATERNAL_MPU6050:
+
+        results["MATERNAL_MPU6050"] = validate_loader(
+            "MATERNAL_MPU6050",
+            maternal_loader,
+            DATASET_EXPECTED_SOURCES[
+                "MATERNAL_MPU6050"
+            ],
+        )
 
     # -------------------------------------------------------------------------
     # Final summary
