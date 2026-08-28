@@ -80,20 +80,32 @@ MANUAL_TEMPLATE_PATH = INSPECTION_DIR / "manual_label_template.csv"
 
 
 # ============================================================
-# CONFIG — EDIT AFTER INSPECTING TRUE_LABEL VALUES
+# CONFIG — COUGH TRIAL SEMANTICS (CONFIRMED, NOT A GUESS)
 # ============================================================
 #
-# These are trial-name substrings from the Multimodal Cough
-# Dataset that represent a QUIET / BASELINE condition (i.e.
-# NOT expected to contain non-fetal motion artifacts).
-# Everything else is treated as a candidate artifact-positive
-# activity (cough, laugh, walk, sneeze, speech, etc.).
+# CONFIRMED against the actual dataset folder names:
+#   ['Trial_1_No_Talking', 'Trial_2_Talking', 'Trial_3_Nonverbal']
 #
-# IMPORTANT: run this script once, read the printed list of
-# unique true_label values under COUGH, and correct this list
-# before trusting the weak labels.
+# These are SPEECH/TALKING CONDITIONS during the recording, not
+# activity-type labels (cough / laugh / walk / etc). There is no
+# "quiet baseline vs. active motion" distinction encoded in the
+# trial folder name at all — the earlier QUIET_TRIAL_KEYWORDS
+# approach (matching "rest"/"quiet"/"still" substrings) was built
+# on a wrong assumption about what these folder names meant and is
+# now disabled below rather than left silently wrong.
+#
+# The real per-event activity labels (cough/laugh/speech/sneeze/
+# etc, if they exist) live in a separate annotation JSON per trial
+# — see the "Cough Event Analysis" section of
+# 03_artifact_dataset_exploration.ipynb, which reads an
+# `annotation_file`. Parsing that JSON into per-event ground truth
+# is real, separate work, not something to fake from the folder
+# name. Given the 5-day timeline, this is intentionally deferred:
+# COUGH is used purely as a non-target-motion reference dataset for
+# now, exactly as the project architecture already designates it —
+# not as a source of weak supervision.
 
-QUIET_TRIAL_KEYWORDS = ["rest", "quiet", "still", "baseline", "sit"]
+COUGH_WEAK_LABELS_ENABLED = False
 
 
 # ============================================================
@@ -158,30 +170,26 @@ def apply_manual_labels(features: pd.DataFrame, manual: pd.DataFrame) -> pd.Data
 
 
 def apply_cough_weak_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    DISABLED (see COUGH_WEAK_LABELS_ENABLED above). trial_dir.name
+    encodes a talking/non-talking condition, not an activity type
+    — there is no valid quiet-vs-active split to derive from it.
+    Returns the frame unchanged, with weak_label_cough left as NaN
+    for every row so resolve_final_label() falls through to manual
+    labels or "unlabeled" instead of a fabricated weak label.
+    """
 
     df = df.copy()
+    df["weak_label_cough"] = np.nan
 
-    is_cough = df["dataset"] == "COUGH"
-
-    if "true_label" not in df.columns:
-        print(
-            "NOTE: 'true_label' column not found — apply the "
-            "extract_segment_features() patch and re-run "
-            "02_artifact_inspection.py to enable COUGH weak labels."
-        )
-        df["weak_label_cough"] = np.nan
+    if not COUGH_WEAK_LABELS_ENABLED:
         return df
 
-    def classify(label: str) -> float:
-        if not isinstance(label, str) or not label:
-            return np.nan
-        label_lower = label.lower()
-        is_quiet = any(keyword in label_lower for keyword in QUIET_TRIAL_KEYWORDS)
-        return 0.0 if is_quiet else 1.0
-
-    df["weak_label_cough"] = np.nan
-    df.loc[is_cough, "weak_label_cough"] = df.loc[is_cough, "true_label"].apply(classify)
-
+    # Unreachable while disabled — kept only so re-enabling this
+    # requires flipping one flag once real per-event COUGH labels
+    # (from the annotation JSON) are parsed, not rewriting this
+    # function from scratch.
+    is_cough = df["dataset"] == "COUGH"
     return df
 
 
@@ -262,16 +270,13 @@ def main() -> None:
     if "true_label" in merged.columns:
         cough_rows = merged[merged["dataset"] == "COUGH"]
         if not cough_rows.empty:
-            report_lines.append("COUGH: unique true_label values found")
+            report_lines.append(
+                "COUGH: unique true_label (trial folder) values found "
+                "-- these are talking/non-talking CONDITIONS, not "
+                "activity types. COUGH weak-labeling is disabled; "
+                "see COUGH_WEAK_LABELS_ENABLED."
+            )
             report_lines.append(str(sorted(cough_rows["true_label"].dropna().unique())))
-            report_lines.append("")
-            report_lines.append(
-                "COUGH: weak_label_cough vs true_label crosstab "
-                "(sanity check the QUIET_TRIAL_KEYWORDS list above)"
-            )
-            report_lines.append(
-                str(pd.crosstab(cough_rows["true_label"], cough_rows["weak_label_cough"]))
-            )
             report_lines.append("")
 
     manual_labeled = merged[merged["label_source"] == "manual"]
@@ -306,8 +311,11 @@ def main() -> None:
         f"{merged['is_artifact'].notna().sum()} / {len(merged)}"
     )
     print(
-        "\nIf this count looks too low, either label more candidates "
-        "manually, or widen/verify QUIET_TRIAL_KEYWORDS above."
+        "\nIf this count looks too low: COUGH weak-labeling is "
+        "disabled (see COUGH_WEAK_LABELS_ENABLED), so COUGH rows "
+        "only get labeled through manual review. FOUR_IMU and "
+        "OXFORD rely entirely on manual labeling too -- widen the "
+        "manual-review sample if this number is too small to train on."
     )
 
 
