@@ -131,6 +131,8 @@ class SegmentInfo:
 
     negative_interval_count: int
 
+    jitter_cv: Optional[float]
+
     timing_quality: str
 
     valid: bool
@@ -182,6 +184,92 @@ def calculate_timestamp_deltas(
         return np.array([], dtype=float)
 
     return np.diff(ts)
+
+
+def calculate_jitter_metrics(
+    timestamps: Sequence[float],
+    config: TimingConfig,
+) -> dict:
+    """
+    Report how much the sampling interval varies, as an explicit,
+    reportable metric — not just the internal threshold already
+    used inside detect_discontinuities().
+
+    Gaps and negative/duplicate intervals are excluded first, so
+    this measures ordinary timing jitter within otherwise-normal
+    sampling, not the effect of discontinuities already handled
+    elsewhere.
+
+    Returns
+    -------
+    dict with:
+        interval_count            number of Δt values considered
+        mean_dt_seconds
+        std_dt_seconds
+        jitter_cv                 std/mean of Δt (coefficient of
+                                   variation) — the standard way to
+                                   report jitter independent of the
+                                   sampling rate's absolute scale.
+                                   0.0 = perfectly regular sampling.
+        within_tolerance          whether jitter_cv is within
+                                   config.jitter_tolerance_fraction
+    """
+
+    timestamps_array = np.asarray(timestamps, dtype=float)
+
+    if len(timestamps_array) < 2:
+
+        return {
+            "interval_count": 0,
+            "mean_dt_seconds": None,
+            "std_dt_seconds": None,
+            "jitter_cv": None,
+            "within_tolerance": None,
+        }
+
+    deltas = calculate_timestamp_deltas(timestamps_array)
+
+    expected_dt = calculate_expected_interval(
+        config.expected_sampling_rate_hz
+    )
+
+    if expected_dt is None:
+        positive = deltas[deltas > 0]
+        expected_dt = (
+            float(np.median(positive)) if len(positive) > 0 else None
+        )
+
+    ordinary_deltas = deltas[
+        (deltas > 0)
+        & (deltas <= (expected_dt * config.gap_factor if expected_dt else np.inf))
+    ]
+
+    if len(ordinary_deltas) == 0:
+
+        return {
+            "interval_count": 0,
+            "mean_dt_seconds": None,
+            "std_dt_seconds": None,
+            "jitter_cv": None,
+            "within_tolerance": None,
+        }
+
+    mean_dt = float(np.mean(ordinary_deltas))
+    std_dt = float(np.std(ordinary_deltas))
+    jitter_cv = (std_dt / mean_dt) if mean_dt > 0 else None
+
+    within_tolerance = (
+        jitter_cv is not None
+        and jitter_cv <= config.jitter_tolerance_fraction
+    )
+
+    return {
+        "interval_count": int(len(ordinary_deltas)),
+        "mean_dt_seconds": mean_dt,
+        "std_dt_seconds": std_dt,
+        "jitter_cv": jitter_cv,
+        "within_tolerance": within_tolerance,
+    }
 
 
 # ============================================================================
@@ -720,6 +808,11 @@ def summarize_segment(
         config,
     )
 
+    jitter = calculate_jitter_metrics(
+        timestamps,
+        config,
+    )
+
     # Estimate actual segment sampling rate
     # using the median positive interval.
     positive_deltas = deltas[
@@ -809,6 +902,7 @@ def summarize_segment(
         sampling_rate_hz=sampling_rate,
         gap_count_inside=len(gaps),
         negative_interval_count=negative_count,
+        jitter_cv=jitter["jitter_cv"],
         timing_quality=timing_quality,
         valid=validation["valid"],
         rejection_reason=validation[
