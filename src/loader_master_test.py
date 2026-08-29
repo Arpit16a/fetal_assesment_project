@@ -26,6 +26,7 @@ A failed loader validation should block downstream work.
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -587,13 +588,56 @@ def validate_loader(
         expected_source,
     ):
 
+        # MEMORY FIX: even on failure, release this loader's cached
+        # data before returning — see the success-path note below
+        # for why this matters.
+        _release_loader_memory(loader, standardized)
+
         return False
 
     print(
         f"\n✅ {name} LOADER PASSED"
     )
 
+    # -------------------------------------------------------------------------
+    # MEMORY CLEANUP
+    # -------------------------------------------------------------------------
+    #
+    # BaseDatasetLoader.run() caches BOTH the raw pre-standardization
+    # data (self.raw_data) AND the full standardized DataFrame
+    # (self.standardized_data) as instance attributes, and this
+    # loader object stays alive as a local variable in main() for
+    # the rest of the script. Across three datasets validated back
+    # to back, that means Cough's ~3M-row frame and Four-IMU's much
+    # larger ~30M-row frame can both be fully resident in memory at
+    # once, even though each is only actually needed for its own
+    # validation step. This is almost certainly why the run that
+    # failed here previously succeeded once before: it's a peak
+    # memory accumulation issue, not a correctness bug in any one
+    # loader, so whether it fails depends on how much other memory
+    # (browser, IDE, previous process) happens to be free at the
+    # time — releasing each dataset's memory as soon as it's been
+    # validated keeps peak usage bounded by the single largest
+    # dataset instead of the sum of all of them.
+    _release_loader_memory(loader, standardized)
+
     return True
+
+
+def _release_loader_memory(
+    loader: BaseDatasetLoader,
+    standardized: StandardizedData,
+) -> None:
+    """Drop references to a validated loader's cached data and
+    force collection, so the next (possibly much larger) dataset
+    isn't competing with this one for memory."""
+
+    loader.raw_data = None
+    loader.standardized_data = None
+
+    del standardized
+
+    gc.collect()
 
 
 # =============================================================================
