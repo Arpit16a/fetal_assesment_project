@@ -18,3 +18,7 @@ data/raw/
 # OS files
 .DS_Store
 Thumbs.db
+
+data/processed/signal_processing/*.csv
+data/processed/artifact_labels/*.csv
+data/processed/artifact_labels/*.txt
