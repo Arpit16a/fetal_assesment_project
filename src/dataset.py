@@ -248,6 +248,37 @@ def ensure_standard_columns(
         if column not in standardized.columns:
             standardized[column] = np.nan
 
+    # MEMORY FIX: for a 29M-row dataset (Four-IMU), storing repeated
+    # strings as plain object dtype is extremely wasteful — pandas
+    # allocates a separate Python string object per cell, not per
+    # unique value. This is very likely why loader_master_test.py
+    # hit a MemoryError partway through a run that had previously
+    # succeeded: total memory footprint, not a specific bad value.
+    # category dtype stores each unique string once plus a small
+    # integer code per row — same data, same values on read, a
+    # fraction of the memory. Low/medium-cardinality columns only;
+    # timestamp and the numeric sensor columns are untouched.
+    categorical_columns = [
+        "sensor_id",
+        "dataset_source",
+        "label",
+        "subject_id",
+        "record_id",
+    ]
+
+    for column in categorical_columns:
+        if column in standardized.columns and (
+            standardized[column].dtype == object
+            or pd.api.types.is_string_dtype(standardized[column])
+        ):
+            # NOTE: checking only `dtype == object` was insufficient
+            # on pandas versions where string columns default to the
+            # dedicated "string"/"str" dtype rather than legacy
+            # object — that check silently matched nothing and the
+            # "fix" did nothing, caught by re-measuring memory
+            # before/after rather than trusting the diff alone.
+            standardized[column] = standardized[column].astype("category")
+
     if keep_extra_columns:
         extra_columns = [
             column
