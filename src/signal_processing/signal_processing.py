@@ -580,7 +580,20 @@ def process_dataset(
 
     for keys, record_data in standardized_data.groupby(group_columns):
 
-        record_id = keys[0] if isinstance(keys, tuple) else keys
+        # BUG FIX: segment_id previously used record_id only, so
+        # every sensor in a multi-sensor recording (e.g. Four-IMU's
+        # 4 IMUs) got IDENTICAL segment_id strings. Downstream code
+        # that looks candidates/windows up BY segment_id (Phase 7's
+        # feature extraction, in particular) then matched candidates
+        # from all four sensors at once and silently computed
+        # features against the wrong sensor's signal whenever index
+        # ranges happened to overlap. Caught via a synthetic test
+        # with a deliberately un-synchronized 4th sensor — 8 real
+        # candidates produced 32 feature rows before this fix.
+        if isinstance(keys, tuple) and len(keys) > 1:
+            record_id, sensor_component = keys[0], "_".join(str(k) for k in keys[1:])
+        else:
+            record_id, sensor_component = keys, None
 
         segments, _ = timing.analyze_record(
             record_data,
@@ -596,7 +609,11 @@ def process_dataset(
 
         for seg_index, segment in enumerate(segments, start=1):
 
-            segment_id = f"{dataset_name}_{record_id}_seg{seg_index:04d}"
+            segment_id = (
+                f"{dataset_name}_{record_id}_{sensor_component}_seg{seg_index:04d}"
+                if sensor_component is not None
+                else f"{dataset_name}_{record_id}_seg{seg_index:04d}"
+            )
 
             rows = process_segment(segment, dataset_name, segment_id)
             all_rows.extend(rows)
