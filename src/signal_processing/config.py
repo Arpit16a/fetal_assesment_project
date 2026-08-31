@@ -482,6 +482,66 @@ QUALITY_THRESHOLDS = QualityThresholds()
 
 
 # ============================================================
+# ARTIFACT CANDIDATE GENERATION  (PHASE 6)
+# ============================================================
+
+@dataclass(frozen=True)
+class CandidateGenerationConfig:
+    """
+    Parameters for the deterministic candidate-event algorithm in
+    candidate_generation.py:
+
+        filtered signal
+            -> activity score (vector magnitude)
+            -> adaptive threshold (median + k * MAD, PER RECORD)
+            -> contiguous active regions
+            -> merge close regions
+            -> minimum duration filter
+            -> candidate event
+
+    threshold_mad_multiplier is deliberately the only "sensitivity"
+    knob, and it is applied to a threshold computed FROM EACH
+    RECORD'S OWN activity score (median + k*MAD), not a fixed
+    absolute cutoff shared across datasets. This is why the same
+    config works for Four-IMU's accelerometer-scale signal and
+    Oxford's BCG-scale signal without separate hand-tuned absolute
+    thresholds per dataset — the adaptive baseline absorbs the
+    scale difference; k controls how many "robust standard
+    deviations" above typical activity counts as elevated.
+    """
+
+    # Robust z-score multiplier for the adaptive threshold. 3.0 is
+    # a standard "clearly elevated, not just noisy" choice for
+    # MAD-based thresholds (the equivalent of ~3 std deviations
+    # for a roughly-Gaussian-ish activity score, though the
+    # actual distribution won't be exactly Gaussian — MAD is used
+    # specifically because it stays robust even when it isn't).
+    threshold_mad_multiplier: float = 3.0
+
+    # A contiguous active region shorter than this is treated as
+    # noise/a single spike, not a candidate event. 0.3s is short
+    # enough not to discard genuine brief movements, long enough
+    # to reject single-sample glitches at any of this project's
+    # sampling rates (30-500 Hz).
+    min_event_duration_seconds: float = 0.3
+
+    # Two active regions separated by a gap shorter than this are
+    # merged into one event, rather than being reported as two
+    # fragments of what was likely one continuous movement.
+    merge_gap_seconds: float = 0.5
+
+    # A record needs at least this many valid (non-INVALID-quality)
+    # samples to compute a meaningful adaptive baseline from. Below
+    # this, the record is skipped for candidate generation rather
+    # than thresholding against a baseline estimated from too little
+    # data.
+    min_valid_samples_for_baseline: int = 50
+
+
+CANDIDATE_GENERATION_CONFIG = CandidateGenerationConfig()
+
+
+# ============================================================
 # VALIDATION HELPERS
 # ============================================================
 

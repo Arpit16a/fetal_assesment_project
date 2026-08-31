@@ -1,14 +1,21 @@
 LABEL SOURCE COUNTS (all datasets)
 label_source
-unlabeled    13084
+unlabeled               50272
+heuristic_suggestion      165
 Name: count, dtype: int64
 
 CLASS BALANCE (resolved is_artifact, labeled rows only)
-Series([], Name: count, dtype: int64)
+is_artifact
+1.0    106
+0.0     59
+Name: count, dtype: int64
 
 LABEL SOURCE BY DATASET
-label_source  unlabeled
-dataset                
-COUGH                56
-FOUR-IMU          13012
-OXFORD               16
+label_source  heuristic_suggestion  unlabeled
+dataset                                      
+COUGH                           60        341
+FOUR_IMU                        77      48826
+OXFORD                          28       1105
+
+COUGH: unique true_label (trial folder) values found -- these are talking/non-talking CONDITIONS, not activity types. COUGH weak-labeling is disabled; see COUGH_WEAK_LABELS_ENABLED.
+['Trial_1_No_Talking', 'Trial_2_Talking', 'Trial_3_Nonverbal']
