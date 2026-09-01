@@ -1,0 +1,4 @@
+dataset,non_artifact,artifact
+COUGH,0,60
+FOUR_IMU,31,46
+OXFORD,28,0

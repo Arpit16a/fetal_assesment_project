@@ -1,5 +1,4 @@
 [
-  "sample_count",
   "peak_activity_score",
   "primary_rms",
   "primary_peak",
@@ -20,6 +19,5 @@
   "secondary_variance",
   "secondary_zero_crossing_rate",
   "secondary_energy",
-  "secondary_mean_energy",
-  "max_sensor_overlap_fraction"
+  "secondary_mean_energy"
 ]
