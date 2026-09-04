@@ -168,10 +168,18 @@ COUGH_CONFIG = DatasetConfig(
     # used for the fetal datasets (see FOUR_IMU_CONFIG /
     # OXFORD_CONFIG below) — appropriate here because COUGH is used
     # as a non-target-motion reference, not because it needs a
-    # fetal-specific band. Low cut removes slow drift/gravity
-    # offset; high cut removes high-frequency sensor noise while
-    # keeping the general human-motion band.
-    bandpass_hz=(1.0, 20.0),
+    # fetal-specific band.
+    #
+    # LOW CUTOFF UPDATED 0.5 Hz (was 1.0 Hz): two independent
+    # published fetal-movement-monitoring systems (Zhao et al. 2020,
+    # IRBM; and a second system reviewed against PMC8443392) both
+    # independently land on 0.5 Hz specifically, with the same
+    # stated reason — maternal breathing sits around 0.2-0.5 Hz, so
+    # 0.5 Hz removes it without risking clipping slower/weaker real
+    # signal content the way a 1.0 Hz cutoff could. Applied
+    # consistently across all three datasets rather than only where
+    # it was first noticed.
+    bandpass_hz=(0.5, 20.0),
 
     lowpass_hz=None,
 
@@ -232,12 +240,32 @@ FOUR_IMU_CONFIG = DatasetConfig(
     # (as literature commonly uses for higher-rate accelerometer
     # data) is NOT valid here — it would exceed Nyquist and
     # validate_config() below would reject it. 1-10 Hz keeps
-    # meaningful headroom under the 15 Hz ceiling while still
-    # covering the fetal-movement-relevant band reported in the
-    # literature (e.g. Altini et al., 1-10 Hz for IMU-based fetal
-    # movement). This is the dataset-specific reason this band
-    # differs from COUGH/OXFORD — not an oversight.
-    bandpass_hz=(1.0, 10.0),
+    # meaningful headroom under the 15 Hz ceiling. This upper bound
+    # is also directly supported, not just Nyquist-constrained: a
+    # published multi-modal fetal-movement monitor (ScienceDirect,
+    # "Multi-modal detection of fetal movements using a wearable
+    # monitor") independently chose 1-10 Hz specifically for its
+    # IMU accelerometer channel, describing it as "experimentally
+    # determined as an optimum passband" for that exact sensor
+    # type — the same modality this dataset uses.
+    #
+    # ACTION ITEM — VERIFY BEFORE TRUSTING THIS FURTHER: the "30 Hz"
+    # sampling rate below is annotated as coming from this project's
+    # OWN sampling_audit.py measurement of the real downloaded
+    # files, not from a paper. That is the right source of truth —
+    # but re-confirm it directly against sampling_audit.py's actual
+    # saved output before relying on this Nyquist ceiling further.
+    # Published papers describing similarly-structured 4-IMU
+    # push-button datasets report sampling rates from 30 Hz up to
+    # 128 Hz depending on the exact system — none confirmed as this
+    # project's specific data source. If the true rate is higher
+    # than 30 Hz, this upper cutoff should be revisited and widened
+    # using the same Nyquist logic, not left at 10 Hz by default.
+    #
+    # LOW CUTOFF UPDATED to 0.5 Hz (was 1.0 Hz) — see COUGH_CONFIG
+    # comment above for the two-paper justification, applied here
+    # identically.
+    bandpass_hz=(0.5, 10.0),
 
     lowpass_hz=None,
 
@@ -292,8 +320,14 @@ OXFORD_CONFIG = DatasetConfig(
     # headroom. Kept identical to the fetal-movement band literature
     # uses at comparable sampling rates, not widened just because
     # Nyquist allows it — a wider band would just reintroduce the
-    # high-frequency noise this filter exists to remove.
-    bandpass_hz=(1.0, 20.0),
+    # high-frequency noise this filter exists to remove. The 20 Hz
+    # upper bound specifically matches Zhao et al. (IRBM, 2020),
+    # which states fetal movement's spectral band "is usually
+    # located below 20 Hz," citing prior spectral analyses.
+    #
+    # LOW CUTOFF UPDATED to 0.5 Hz (was 1.0 Hz) — see COUGH_CONFIG
+    # comment above for the two-paper justification.
+    bandpass_hz=(0.5, 20.0),
 
     lowpass_hz=None,
 
