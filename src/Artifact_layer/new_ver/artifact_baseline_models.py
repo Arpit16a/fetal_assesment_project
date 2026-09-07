@@ -59,6 +59,7 @@ data/processed/artifact_baseline/
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -863,6 +864,32 @@ def run_human_label_baseline(df: pd.DataFrame) -> None:
 
     (OUTPUT_DIR / "best_model_features.json").write_text(
         json.dumps(features, indent=2)
+    )
+
+    # METADATA SIDECAR — this is what movement_detection.py checks
+    # before trusting best_model.joblib at all. Without this file
+    # (or an older script version that doesn't write it), a stale
+    # model from a PREVIOUS, less careful run stays on disk
+    # indefinitely and gets silently reused — which is exactly what
+    # happened: an earlier permissive version of this script saved a
+    # model unconditionally, even when every label was heuristic,
+    # and movement_detection.py trusted it purely because the file
+    # existed. This sidecar makes "was this really trained on real
+    # human labels" a checkable fact, not an assumption.
+    (OUTPUT_DIR / "model_metadata.json").write_text(
+        json.dumps(
+            {
+                "trained_on_real_manual_labels": True,
+                "manual_label_count": int(len(X)),
+                "unique_subjects": int(groups.nunique()),
+                "model_name": best_name,
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+                "held_out_test_metrics": {
+                    k: float(v) for k, v in held_out.items()
+                },
+            },
+            indent=2,
+        )
     )
 
     # XGBoost feature importance, fitted only for interpretation.
