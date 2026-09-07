@@ -92,13 +92,62 @@ ARTIFACT_PROBABILITY_THRESHOLD = 0.5
 
 def load_trained_model():
     """Returns (model, feature_columns) or (None, None) if no real,
-    deployable model has been trained yet (Phase 8's correct gate)."""
+    deployable model has been trained yet (Phase 8's correct gate).
+
+    SAFETY CHECK — this is the fix for a real incident, not
+    speculative caution: best_model.joblib was found to still exist
+    on disk from an earlier, permissive version of
+    artifact_baseline_models.py that saved a model unconditionally,
+    even when every label was heuristic-sourced. The corrected
+    script refuses to save a model in that situation — but it can't
+    retroactively invalidate a stale file an OLDER script already
+    wrote. That stale file was then silently trusted here, filtering
+    Cough from 401 candidates down to 2 "movements" using a model
+    that had only ever learned a circular heuristic rule, not real
+    artifact/fetal-movement separation.
+
+    Fix: require a companion model_metadata.json written by the
+    SAME run that saved the model, explicitly declaring it was
+    trained on real human-reviewed labels. No metadata file, or a
+    metadata file saying otherwise, means the model is not trusted
+    here — regardless of whether the .joblib file exists.
+    """
 
     model_path = BASELINE_DIR / "best_model.joblib"
     features_path = BASELINE_DIR / "best_model_features.json"
+    metadata_path = BASELINE_DIR / "model_metadata.json"
 
     if not model_path.exists() or not features_path.exists():
         return None, None
+
+    if not metadata_path.exists():
+        print(
+            f"\nWARNING: {model_path} exists but {metadata_path} does not. "
+            f"Refusing to trust this model — it cannot be confirmed as "
+            f"trained on real human-reviewed labels (it may be a stale file "
+            f"from an older script version). Delete it and re-run "
+            f"artifact_baseline_models.py, or investigate before trusting "
+            f"it. Falling back to unfiltered/provisional mode."
+        )
+        return None, None
+
+    metadata = json.loads(metadata_path.read_text())
+
+    if not metadata.get("trained_on_real_manual_labels", False):
+        print(
+            f"\nWARNING: {metadata_path} exists but does not confirm "
+            f"training on real manual labels (trained_on_real_manual_labels="
+            f"{metadata.get('trained_on_real_manual_labels')!r}). Refusing "
+            f"to trust this model. Falling back to unfiltered/provisional "
+            f"mode."
+        )
+        return None, None
+
+    print(
+        f"\nTrusted model confirmed: trained on "
+        f"{metadata.get('manual_label_count', '?')} real manual labels "
+        f"on {metadata.get('trained_at', 'unknown date')}."
+    )
 
     model = joblib.load(model_path)
     feature_columns = json.loads(features_path.read_text())
