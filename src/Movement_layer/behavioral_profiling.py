@@ -127,7 +127,7 @@ def profile_one_recording(group: pd.DataFrame) -> dict:
     max_burst_size = int(burst_sizes.max())
 
     # --- Movement repertoire ---
-    duration_std = float(group["duration_seconds"].std()) if movement_count > 1 else 0.0
+    duration_std = float(group["duration"].std()) if movement_count > 1 else 0.0
     peak_std = (
         float(group["primary_peak"].std())
         if "primary_peak" in group.columns and movement_count > 1
@@ -206,7 +206,7 @@ def process_dataset(dataset_name: str) -> pd.DataFrame | None:
         print(f"{dataset_name}: 0 movements, nothing to profile.")
         return None
 
-    required = ["subject_id", "record_id", "start_time", "end_time", "duration_seconds"]
+    required = ["subject_id", "record_id", "start_time", "end_time", "duration"]
     missing = [c for c in required if c not in movements.columns]
     if missing:
         print(f"{dataset_name}: SKIPPED -- missing required columns: {missing}")
