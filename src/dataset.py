@@ -637,7 +637,19 @@ class CoughLoader(BaseDatasetLoader):
                 {
                     "subject_id": subject_dir.name,
                     "trial": trial_dir.name,
-                    "record_id": trial_dir.name,
+                    # BUG FIX: same collision class as Four-IMU's
+                    # record_id, just worse here — only 3 trial
+                    # names exist ("Trial_1_No_Talking",
+                    # "Trial_2_Talking", "Trial_3_Nonverbal") and
+                    # all 13 subjects reuse all 3, so record_id was
+                    # colliding up to 13 ways, not just up to 3 ways
+                    # like Four-IMU. Confirmed via real data: Cough
+                    # showed a 30.89% negative inter-event-interval
+                    # rate (vs. Four-IMU's 4.24% before its fix) --
+                    # exactly consistent with a worse collision
+                    # ratio. Qualifying with subject_id guarantees
+                    # uniqueness the same way the Four-IMU fix did.
+                    "record_id": f"{subject_dir.name}_{trial_dir.name}",
                     "trial_path": trial_dir,
                     "accelerometer": accel_file,
                     "gyroscope": self._find_file(
@@ -1029,7 +1041,24 @@ class FourIMULoader(BaseDatasetLoader):
                     records.append(
                         {
                             "sub_dataset": subdir.name,
-                            "record_id": csv_file.stem,
+                            # BUG FIX: record_id was previously just
+                            # csv_file.stem (e.g. "record_1") — NOT
+                            # unique across sub-datasets, since all
+                            # three sub-datasets number their files
+                            # in the same 1-45 range. This silently
+                            # merged events from up to 3 physically
+                            # different recordings under one fake
+                            # identity everywhere downstream that
+                            # groups by record_id (Phase 9/10's
+                            # inter-event intervals, Phase 7's
+                            # multi-sensor synchronization feature,
+                            # and subject_id itself, which is
+                            # derived from record_id) — confirmed via
+                            # real negative inter-event intervals
+                            # traced back to exactly this collision.
+                            # Qualifying with sub_dataset guarantees
+                            # uniqueness across the whole dataset.
+                            "record_id": f"{subdir.name}_{csv_file.stem}",
                             "path": csv_file,
                         }
                     )
@@ -1856,9 +1885,21 @@ class MaternalMPU6050Loader(BaseDatasetLoader):
         for csv_file in sorted(self.root_path.rglob(self.file_pattern)):
 
             if csv_file.is_file():
+                # Using the relative path (not just the filename
+                # stem) as record_id, so this stays collision-proof
+                # regardless of what folder structure the real
+                # collection protocol ends up using — the exact bug
+                # class found in FourIMULoader and CoughLoader
+                # (filename reused across sub-folders silently
+                # merging distinct recordings) is preempted here
+                # without needing to guess the real folder layout in
+                # advance.
+                relative_id = csv_file.relative_to(self.root_path).with_suffix("")
+                record_id = str(relative_id).replace("/", "_").replace("\\", "_")
+
                 records.append(
                     {
-                        "record_id": csv_file.stem,
+                        "record_id": record_id,
                         "path": csv_file,
                     }
                 )
