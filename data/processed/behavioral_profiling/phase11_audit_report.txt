@@ -1,0 +1,47 @@
+==============================================================================
+PHASE 11 VALIDATION
+==============================================================================
+
+--- COUGH ---
+Total movements: 385
+Inf values: 0
+Negative inter-event intervals: 0 (0.00%)
+
+Recordings/sensor-streams with fewer than 3 movements: 7 / 39
+
+--- FOUR_IMU ---
+Total movements: 49720
+Inf values: 0
+Negative inter-event intervals: 0 (0.00%)
+
+Cross-sensor proximity check:
+  Records with >1 sensor: 109
+  Records with near-simultaneous (<=0.3s) cross-sensor events: 109 (100.0%)
+  Total near-simultaneous cross-sensor event pairs: 20463
+
+Burst-threshold sensitivity (mean burst_count per recording):
+ threshold_seconds  mean_burst_count  median_burst_count
+               5.0         77.190367                70.5
+              10.0         62.119266                57.0
+              15.0         50.463303                45.5
+              20.0         40.408257                37.5
+
+Recordings/sensor-streams with fewer than 3 movements: 0 / 436
+
+--- OXFORD ---
+Total movements: 1135
+Inf values: 0
+Negative inter-event intervals: 0 (0.00%)
+
+Recordings/sensor-streams with fewer than 3 movements: 0 / 16
+
+==============================================================================
+SUMMARY
+==============================================================================
+Profiles: COUGH 39, FOUR_IMU 109, OXFORD 16
+TOTAL: 164
+
+Negative-interval rows found across all datasets: 0
+
+STATUS: ARCHITECTURE VALIDATED / BEHAVIORAL INTERPRETATION NOT YET VALIDATED
+Reasons: (1) no trustworthy artifact classifier exists yet -- all movements are provisional; (2) BURST_GAP_SECONDS is a provisional engineering threshold, not a validated definition -- see the sensitivity table above; (3) if any negative intervals were found, re-run after the record_id fix before trusting Four-IMU numbers.
